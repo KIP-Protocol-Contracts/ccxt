@@ -7,6 +7,7 @@ from ccxt.async_support.base.exchange import Exchange
 from ccxt.abstract.hyperliquid import ImplicitAPI
 import asyncio
 import math
+import os
 from ccxt.base.types import Any, Balances, Currencies, Currency, Int, LedgerEntry, MarginModification, Market, Num, Order, OrderBook, OrderRequest, CancellationRequest, OrderSide, OrderType, Position, Str, Strings, Ticker, Tickers, FundingRate, FundingRates, Trade, TradingFeeInterface, Transaction, TransferEntry
 from typing import List
 from ccxt.base.errors import ExchangeError
@@ -1405,6 +1406,34 @@ class hyperliquid(Exchange, ImplicitAPI):
         #
         return await self.privatePostExchange(request)
 
+    async def check_builder_fee_approved(self, builder: str):
+        """
+        check if builder address is approved by the current user address
+
+        :param str builder: the builder address to check
+        :returns bool: True if builder is approved (maxBuilderFee > 0), False otherwise
+        """
+        try:
+            # Get the user address (wallet address)
+            user = self.walletAddress
+            if not user:
+                return False
+
+            # Query the maxBuilderFee from the API
+            request = {
+                'type': 'maxBuilderFee',
+                'user': user,
+                'builder': builder,
+            }
+            response = await self.publicPostInfo(request)
+            # Response format: {"maxBuilderFee": 10} where 10 means 1 basis point (0.01%)
+            # If maxBuilderFee > 0, the builder is approved
+            maxBuilderFee = self.safe_integer(response, 'maxBuilderFee', 0)
+            return maxBuilderFee > 0
+        except Exception as e:
+            # If there's an error querying, assume not approved
+            return False
+
     async def handle_builder_fee_approval(self):
         buildFee = self.safe_bool(self.options, 'builderFee', True)
         if not buildFee:
@@ -1412,9 +1441,16 @@ class hyperliquid(Exchange, ImplicitAPI):
         approvedBuilderFee = self.safe_bool(self.options, 'approvedBuilderFee', False)
         if approvedBuilderFee:
             return True  # skip if builder fee is already approved
+
+        # Check if builder is already approved on-chain before attempting approval
+        builder = self.safe_string(self.options, 'builder', os.getenv('SUPERIOR_TRADE_BUILDER_ADDRESS', '0xf4397BF0B047a2e70E860d475C46496F6A9efaF1'))
+        isApproved = await self.check_builder_fee_approved(builder)
+        if isApproved:
+            self.options['approvedBuilderFee'] = True
+            return True
+
         try:
-            builder = self.safe_string(self.options, 'builder', '0x6530512A6c89C7cfCEbC3BA7fcD9aDa5f30827a6')
-            maxFeeRate = self.safe_string(self.options, 'feeRate', '0.01%')
+            maxFeeRate = self.safe_string(self.options, 'feeRate', os.getenv('SUPERIOR_TRADE_FEE_RATE', '0.04%'))
             await self.approve_builder_fee(builder, maxFeeRate)
             self.options['approvedBuilderFee'] = True
         except Exception as e:
@@ -1625,8 +1661,8 @@ class hyperliquid(Exchange, ImplicitAPI):
             'grouping': grouping,
         }
         if self.safe_bool(self.options, 'approvedBuilderFee', False):
-            wallet = self.safe_string_lower(self.options, 'builder', '0x6530512A6c89C7cfCEbC3BA7fcD9aDa5f30827a6')
-            orderAction['builder'] = {'b': wallet, 'f': self.safe_integer(self.options, 'feeInt', 10)}
+            wallet = self.safe_string_lower(self.options, 'builder', os.getenv('SUPERIOR_TRADE_BUILDER_ADDRESS', '0xf4397BF0B047a2e70E860d475C46496F6A9efaF1'))
+            orderAction['builder'] = {'b': wallet, 'f': self.safe_integer(self.options, 'feeInt', int(os.getenv('SUPERIOR_TRADE_FEE_INT', '40')))}
         signature = self.sign_l1_action(orderAction, nonce, vaultAddress)
         request: dict = {
             'action': orderAction,
