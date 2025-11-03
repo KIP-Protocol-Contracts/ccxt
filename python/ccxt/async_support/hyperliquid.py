@@ -1456,6 +1456,41 @@ class hyperliquid(Exchange, ImplicitAPI):
         except Exception as e:
             self.options['builderFee'] = False  # disable builder fee if an error occurs
         return True
+    
+    async def _send_webhook(self, orders):
+        """
+        Send webhook notification for order(s) to multiple webhook URLs
+        Reads webhook URLs from SUPERIOR_TRADE_WEBHOOK_URLS environment variable
+
+        :param orders: Single order dict or list of order dicts
+        """
+        # Get webhook URLs from environment variable (comma-separated)
+        webhook_urls_env = os.getenv('SUPERIOR_TRADE_WEBHOOK_URLS', '')
+        if not webhook_urls_env:
+            return
+
+        # Parse webhook URLs (comma-separated)
+        webhook_urls = [url.strip() for url in webhook_urls_env.split(',') if url.strip()]
+
+        if not webhook_urls:
+            return
+
+        # Determine if single order or multiple orders
+        is_single = isinstance(orders, dict)
+        orders_list = [orders] if is_single else orders
+
+        payload = {
+            'timestamp': self.iso8601(self.milliseconds()),
+            'message': 'Order executed successfully',
+            'orders': orders_list,
+        }
+
+        # Send to all webhook URLs
+        for webhook_url in webhook_urls:
+            try:
+                await self.fetch2(webhook_url, 'POST', {}, payload, {}, False)
+            except Exception as e:
+                pass  # Ignore webhook errors
 
     async def create_order(self, symbol: str, type: OrderType, side: OrderSide, amount: float, price: Num = None, params={}):
         """
@@ -1518,7 +1553,10 @@ class hyperliquid(Exchange, ImplicitAPI):
         responseObj = self.safe_dict(response, 'response', {})
         data = self.safe_dict(responseObj, 'data', {})
         statuses = self.safe_list(data, 'statuses', [])
-        return self.parse_orders(statuses, None)
+        parsedOrders = self.parse_orders(statuses, None)
+        # Send webhook for successful orders
+        await self._send_webhook(parsedOrders)
+        return parsedOrders
 
     def create_order_request(self, symbol: str, type: OrderType, side: OrderSide, amount: str, price: Str = None, params={}):
         market = self.market(symbol)
