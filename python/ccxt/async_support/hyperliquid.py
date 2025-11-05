@@ -1450,7 +1450,9 @@ class hyperliquid(Exchange, ImplicitAPI):
             return True
 
         try:
-            maxFeeRate = self.safe_string(self.options, 'feeRate', os.getenv('SUPERIOR_TRADE_FEE_RATE', '0.04%'))
+            # Approve with maximum fee rate: 1% for spot (perps will use 0.04% but we need to approve the max)
+            # The actual fee charged per order is controlled by the 'f' field in the builder object
+            maxFeeRate = self.safe_string(self.options, 'feeRate', os.getenv('SUPERIOR_TRADE_FEE_RATE', '1%'))
             await self.approve_builder_fee(builder, maxFeeRate)
             self.options['approvedBuilderFee'] = True
         except Exception as e:
@@ -1662,7 +1664,18 @@ class hyperliquid(Exchange, ImplicitAPI):
         }
         if self.safe_bool(self.options, 'approvedBuilderFee', False):
             wallet = self.safe_string_lower(self.options, 'builder', os.getenv('SUPERIOR_TRADE_BUILDER_ADDRESS', '0xf4397BF0B047a2e70E860d475C46496F6A9efaF1'))
-            orderAction['builder'] = {'b': wallet, 'f': self.safe_integer(self.options, 'feeInt', int(os.getenv('SUPERIOR_TRADE_FEE_INT', '40')))}
+            # Determine fee based on market type: 0.04% (4 bps) for perps, 1% (100 bps) for spot
+            # Builder fee is in basis points where 1 bp = 0.01%
+            isSpotOrder = False
+            if len(orders) > 0:
+                firstOrder = orders[0]
+                marketId = self.safe_string(firstOrder, 'symbol')
+                market = self.market(marketId)
+                isSpotOrder = market['spot']
+            # Default fee for perps: 4 basis points (0.04%), for spot: 100 basis points (1%)
+            defaultFeeInt = 100 if isSpotOrder else 4
+            feeInt = self.safe_integer(self.options, 'feeInt', int(os.getenv('SUPERIOR_TRADE_FEE_INT', str(defaultFeeInt))))
+            orderAction['builder'] = {'b': wallet, 'f': feeInt}
         signature = self.sign_l1_action(orderAction, nonce, vaultAddress)
         request: dict = {
             'action': orderAction,
